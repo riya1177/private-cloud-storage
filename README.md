@@ -3,7 +3,7 @@
 An end-to-end encrypted private cloud storage app built with React, FastAPI, SQLite, and Redis. Features Fernet file encryption, custom folder management, 2FA security, instant cache fallbacks, and secure link sharing with password protection and expiration dates.
 
 ## 📸 Screenshot
-![Dashboard Screenshot](./frontend/public/screenshot.png)
+![Dashboard Screenshot](./screenshot.png)
 
 ## ✨ Key Features
 * **End-to-End Encryption**: Files encrypted via Fernet before storing on disk.
