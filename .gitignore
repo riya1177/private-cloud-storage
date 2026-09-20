@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+
+# Environment & Secrets
+.env
+secret.key
+*.pem
+
+# Database & Local Storage
+cloudstorage.db
+*.db
+storage_pool/
+
+# Build Output
+dist/
+build/
+
+# IDE & OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
