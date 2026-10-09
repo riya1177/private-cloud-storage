@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+redis
+cryptography
+python-multipart
+python-dotenv
+requests
