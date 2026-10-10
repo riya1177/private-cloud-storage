@@ -6,3 +6,4 @@ cryptography
 python-multipart
 python-dotenv
 requests
+google-auth
