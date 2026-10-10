@@ -21,7 +21,7 @@ from database import (
 
 # Import authentication & security helpers
 import auth
-from auth import verify_user_token, hash_password, verify_password, hash_token
+from auth import verify_user_token, hash_password, verify_password, hash_token, create_user_session
 
 # Import email service
 from email_service import send_password_reset_email, send_otp_email, is_smtp_configured
@@ -66,9 +66,22 @@ def invalidate_frequently_used_cache(username: str):
 
 FREQUENT_FILES_CACHE_TTL = 60
 
+allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "").strip()
+if allowed_origins_env:
+    cors_origins = [o.strip() for o in allowed_origins_env.split(",") if o.strip()]
+else:
+    cors_origins = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    ]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -192,17 +205,6 @@ def mask_email(email: str) -> str:
 def read_root():
     return {"message": "Cloud Storage Backend is running!"}
 
-def create_user_session(db: Session, username: str) -> str:
-    token_val = secrets.token_hex(32)
-    session = UserSession(
-        username=username,
-        token=token_val,
-        expires_at=datetime.datetime.utcnow() + datetime.timedelta(days=7)
-    )
-    db.add(session)
-    db.commit()
-    return token_val
-
 # --- TOKEN LOGIN ENDPOINT ---
 @app.post("/token")
 async def login(
@@ -235,10 +237,10 @@ async def login(
         otp_hash = hash_token(otp_code)
 
         db.query(OTPRecord).filter(
-            OTPRecord.username == user.username,
+            (OTPRecord.username == user.username) | (OTPRecord.email.ilike(user.email)),
             OTPRecord.purpose == "login",
             OTPRecord.used_at == None
-        ).update({"used_at": datetime.datetime.utcnow()})
+        ).update({"used_at": datetime.datetime.utcnow()}, synchronize_session=False)
 
         new_otp = OTPRecord(
             username=user.username,
@@ -283,8 +285,15 @@ async def verify_2fa(
     if not username or not otp_code:
         raise HTTPException(status_code=400, detail="Username and verification code are required")
 
+    user = db.query(User).filter(
+        (User.username == username) | (User.email.ilike(username))
+    ).first()
+
+    target_username = user.username if user else username
+    target_email = user.email if user else username
+
     otp_record = db.query(OTPRecord).filter(
-        OTPRecord.username == username,
+        (OTPRecord.username == target_username) | (OTPRecord.email.ilike(target_email)),
         OTPRecord.purpose == "login",
         OTPRecord.used_at == None,
         OTPRecord.expires_at > datetime.datetime.utcnow()
@@ -308,8 +317,8 @@ async def verify_2fa(
     otp_record.used_at = datetime.datetime.utcnow()
     db.commit()
 
-    token_val = create_user_session(db, username)
-    return {"access_token": token_val, "token_type": "bearer", "username": username}
+    token_val = create_user_session(db, target_username)
+    return {"access_token": token_val, "token_type": "bearer", "username": target_username}
 
 
 # --- RESEND 2FA OTP ENDPOINT ---
@@ -327,12 +336,14 @@ async def resend_2fa_otp(
     username = payload.username.strip()
     purpose = payload.purpose.strip()
 
-    user = db.query(User).filter(User.username == username).first()
+    user = db.query(User).filter(
+        (User.username == username) | (User.email.ilike(username))
+    ).first()
     if not user:
         raise HTTPException(status_code=400, detail="User account not found")
 
     latest_otp = db.query(OTPRecord).filter(
-        OTPRecord.username == username,
+        (OTPRecord.username == user.username) | (OTPRecord.email.ilike(user.email)),
         OTPRecord.purpose == purpose
     ).order_by(OTPRecord.id.desc()).first()
 
@@ -347,13 +358,13 @@ async def resend_2fa_otp(
     user_email = user.email
 
     db.query(OTPRecord).filter(
-        OTPRecord.username == username,
+        (OTPRecord.username == user.username) | (OTPRecord.email.ilike(user.email)),
         OTPRecord.purpose == purpose,
         OTPRecord.used_at == None
-    ).update({"used_at": datetime.datetime.utcnow()})
+    ).update({"used_at": datetime.datetime.utcnow()}, synchronize_session=False)
 
     new_otp = OTPRecord(
-        username=username,
+        username=user.username,
         email=user_email,
         otp_hash=otp_hash,
         purpose=purpose,
@@ -363,7 +374,7 @@ async def resend_2fa_otp(
     db.add(new_otp)
     db.commit()
 
-    email_dispatch = send_otp_email(user_email, otp_code, username, purpose=purpose)
+    email_dispatch = send_otp_email(user_email, otp_code, user.username, purpose=purpose)
     if not email_dispatch.get("delivered"):
         raise HTTPException(
             status_code=400,

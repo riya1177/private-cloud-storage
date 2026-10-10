@@ -7,6 +7,11 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Security, HTTPException, Query, status
 from fastapi.security import OAuth2PasswordBearer
 from pydantic import BaseModel
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
+from fastapi import HTTPException, Depends
+from sqlalchemy.orm import Session
+from database import SessionLocal, User
 
 router = APIRouter()
 
@@ -51,6 +56,24 @@ def hash_token(token_str: str) -> str:
     Hashes a sensitive token or OTP using SHA-256 for secure storage.
     """
     return hashlib.sha256(token_str.encode('utf-8')).hexdigest()
+
+
+def create_user_session(db: Session, username: str) -> str:
+    """
+    Generates a 7-day bearer session token for the user and stores it in database.
+    """
+    from database import UserSession
+    import datetime
+
+    token_val = secrets.token_hex(32)
+    session = UserSession(
+        username=username,
+        token=token_val,
+        expires_at=datetime.datetime.utcnow() + datetime.timedelta(days=7)
+    )
+    db.add(session)
+    db.commit()
+    return token_val
 
 
 def verify_user_token(token: str = Security(oauth2_scheme)):
@@ -373,5 +396,152 @@ def import_google_drive_file(
             "filename": original_name,
             "size": file_size
         }
+    finally:
+        db.close()
+
+
+class GoogleLoginRequest(BaseModel):
+    credential: str
+
+@router.post("/auth/google/callback")
+def google_login(payload: GoogleLoginRequest):
+    client_id = os.getenv("GOOGLE_CLIENT_ID", "").strip()
+
+    if not client_id:
+        raise HTTPException(
+            status_code=500,
+            detail="Google Client ID missing in backend .env"
+        )
+
+    try:
+        google_user = id_token.verify_oauth2_token(
+            payload.credential,
+            google_requests.Request(),
+            client_id
+        )
+    except ValueError as err:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or expired Google credential"
+        )
+
+    email = google_user.get("email", "").lower().strip()
+    google_id = google_user.get("sub")
+    email_verified = google_user.get("email_verified", False)
+
+    if not email or not google_id or not email_verified:
+        raise HTTPException(
+            status_code=401,
+            detail="Google account email is not verified"
+        )
+
+    db = SessionLocal()
+
+    try:
+        user = db.query(User).filter(
+            (User.google_id == google_id) |
+            (User.email.ilike(email))
+        ).first()
+
+        if user is None:
+            # Safe auto-provisioning for verified Google accounts if no user exists
+            base_username = email.split("@")[0].strip()
+            username = base_username
+            counter = 1
+            while db.query(User).filter(User.username == username).first():
+                username = f"{base_username}{counter}"
+                counter += 1
+
+            user = User(
+                username=username,
+                email=email,
+                google_id=google_id,
+                auth_provider="google",
+                two_factor_enabled=False
+            )
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+
+        else:
+            if user.google_id and user.google_id != google_id:
+                raise HTTPException(
+                    status_code=403,
+                    detail="This account is linked to a different Google identity."
+                )
+
+            # Link Google account safely when email matches and google_id is missing
+            if not user.google_id:
+                user.google_id = google_id
+                if user.auth_provider == "local" or not user.auth_provider:
+                    user.auth_provider = "google"
+                db.commit()
+
+        if user.two_factor_enabled:
+            from email_service import send_otp_email, is_smtp_configured
+            from database import OTPRecord
+            import secrets
+            import datetime
+
+            def mask_email(email_str: str) -> str:
+                if not email_str or "@" not in email_str:
+                    return email_str or ""
+                name, domain = email_str.split("@", 1)
+                if len(name) <= 2:
+                    masked_name = name[0] + "*"
+                else:
+                    masked_name = name[:2] + "*" * (len(name) - 2)
+                return f"{masked_name}@{domain}"
+
+            if not is_smtp_configured():
+                raise HTTPException(
+                    status_code=400,
+                    detail="Email verification is currently unavailable. Please configure SMTP settings."
+                )
+
+            otp_code = f"{secrets.randbelow(1000000):06d}"
+            otp_hash = hash_token(otp_code)
+
+            db.query(OTPRecord).filter(
+                (OTPRecord.username == user.username) | (OTPRecord.email.ilike(user.email)),
+                OTPRecord.purpose == "login",
+                OTPRecord.used_at == None
+            ).update({"used_at": datetime.datetime.utcnow()}, synchronize_session=False)
+
+            new_otp = OTPRecord(
+                username=user.username,
+                email=user.email,
+                otp_hash=otp_hash,
+                purpose="login",
+                expires_at=datetime.datetime.utcnow() + datetime.timedelta(minutes=5),
+                attempts=0
+            )
+            db.add(new_otp)
+            db.commit()
+
+            email_dispatch = send_otp_email(user.email, otp_code, user.username, purpose="login")
+            if not email_dispatch.get("delivered"):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Unable to send verification email. Please check the email/SMTP configuration."
+                )
+
+            return {
+                "requires_2fa": True,
+                "username": user.username,
+                "email": user.email,
+                "masked_email": mask_email(user.email),
+                "message": f"Two-Step Verification code sent to {mask_email(user.email)}.",
+                "smtp_configured": True
+            }
+
+        token = create_user_session(db, user.username)
+
+        return {
+            "access_token": token,
+            "token_type": "bearer",
+            "username": user.username
+        }
+
     finally:
         db.close()

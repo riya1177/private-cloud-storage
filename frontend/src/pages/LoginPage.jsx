@@ -17,6 +17,8 @@ import {
   ArrowLeft,
   RefreshCw
 } from 'lucide-react';
+import GoogleSignInButton from '../components/auth/GoogleSignInButton';
+import client from '../api/client';
 import { verifyTwoFactorCode, resendTwoFactorCode } from '../api/auth';
 
 const LoginPage = () => {
@@ -85,6 +87,30 @@ const LoginPage = () => {
     }
   };
 
+  // Google Sign-In Handler
+  const handleGoogleSuccess = async (credential) => {
+    setError('');
+    setIsSubmitting(true);
+    try {
+      // Send Google credential to backend OAuth callback endpoint
+      const response = await client.post('/auth/google/callback', { credential });
+      if (response.data && response.data.access_token) {
+        completeTwoFactorLogin(response.data.username || 'Google User', response.data.access_token);
+        navigate('/dashboard');
+      } else {
+        setError('Google Sign-In succeeded, but backend did not return a session token.');
+      }
+    } catch (err) {
+      if (err.response?.status === 404 || err.response?.status === 405) {
+        setError('Google Sign-In credential received. The backend authentication endpoint (/auth/google/callback) is required to issue a valid application session token.');
+      } else {
+        setError(err.response?.data?.detail || err.message || 'Google authentication failed on server.');
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   // 2FA OTP Code Verification Submit
   const handleVerifyOtpSubmit = async (e) => {
     e.preventDefault();
@@ -106,7 +132,7 @@ const LoginPage = () => {
         setError('Verification failed. Invalid code.');
       }
     } catch (err) {
-      setError(err.response?.data?.detail || 'Invalid or expired verification code.');
+      setError(err.response?.data?.detail || err.message || 'Invalid or expired verification code.');
     } finally {
       setIsSubmitting(false);
     }
@@ -121,7 +147,7 @@ const LoginPage = () => {
       await resendTwoFactorCode(pendingUsername, 'login');
       setCooldown(30);
     } catch (err) {
-      setError(err.response?.data?.detail || 'Failed to resend code. Please try again.');
+      setError(err.response?.data?.detail || err.message || 'Failed to resend code. Please try again.');
     } finally {
       setIsSubmitting(false);
     }
@@ -254,6 +280,22 @@ const LoginPage = () => {
                 <span>Log In</span>
               )}
             </button>
+
+            {/* Separator */}
+            <div className="relative my-4 flex items-center justify-center">
+              <div className="border-t border-slate-200 dark:border-slate-800 w-full" />
+              <span className="bg-white/90 dark:bg-slate-900/90 px-3 text-[11px] font-semibold tracking-wider text-slate-400 dark:text-slate-500 uppercase absolute">
+                OR
+              </span>
+            </div>
+
+            {/* Google Sign-In Option */}
+            <GoogleSignInButton
+              text="Continue with Google"
+              onGoogleSuccess={handleGoogleSuccess}
+              onGoogleError={(msg) => setError(msg)}
+              disabled={isSubmitting}
+            />
 
             {/* Sign Up Link - Below Log In button */}
             <div className="mt-4 text-center text-xs text-slate-600 dark:text-slate-400">

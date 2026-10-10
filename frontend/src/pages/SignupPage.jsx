@@ -18,6 +18,9 @@ import {
   CheckCircle2
 } from 'lucide-react';
 import { requestSignupOtp, verifySignupOtp, createSignupAccount } from '../api/auth';
+import GoogleSignInButton from '../components/auth/GoogleSignInButton';
+import client from '../api/client';
+import { useAuth } from '../context/AuthContext';
 
 const SignupPage = () => {
   // Steps: 1 ('user_info') | 2 ('verify_otp') | 3 ('create_password') | 4 ('success')
@@ -43,7 +46,31 @@ const SignupPage = () => {
   const [cooldown, setCooldown] = useState(0);
 
   const { isDark, toggleTheme } = useTheme();
+  const { completeTwoFactorLogin } = useAuth();
   const navigate = useNavigate();
+
+  // Google Sign-Up Handler
+  const handleGoogleSuccess = async (credential) => {
+    setError('');
+    setIsSubmitting(true);
+    try {
+      const response = await client.post('/auth/google/callback', { credential });
+      if (response.data && response.data.access_token) {
+        completeTwoFactorLogin(response.data.username || 'Google User', response.data.access_token);
+        navigate('/dashboard');
+      } else {
+        setError('Google Sign-Up succeeded, but backend did not return a session token.');
+      }
+    } catch (err) {
+      if (err.response?.status === 404 || err.response?.status === 405) {
+        setError('Google Sign-Up credential received. The backend authentication endpoint (/auth/google/callback) is required to issue a valid application session token.');
+      } else {
+        setError(err.response?.data?.detail || err.message || 'Google authentication failed on server.');
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   // Cooldown ticker
   useEffect(() => {
@@ -295,6 +322,22 @@ const SignupPage = () => {
                 <span>Send Verification Code</span>
               )}
             </button>
+
+            {/* Separator */}
+            <div className="relative my-4 flex items-center justify-center">
+              <div className="border-t border-slate-200 dark:border-slate-800 w-full" />
+              <span className="bg-white/90 dark:bg-slate-900/90 px-3 text-[11px] font-semibold tracking-wider text-slate-400 dark:text-slate-500 uppercase absolute">
+                OR
+              </span>
+            </div>
+
+            {/* Google Sign-Up Option */}
+            <GoogleSignInButton
+              text="Sign up with Google"
+              onGoogleSuccess={handleGoogleSuccess}
+              onGoogleError={(msg) => setError(msg)}
+              disabled={isSubmitting}
+            />
 
             <div className="mt-4 text-center text-xs text-slate-600 dark:text-slate-400">
               Already have an account?{' '}

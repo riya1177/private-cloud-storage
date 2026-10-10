@@ -1,17 +1,43 @@
+
 import os
 import datetime
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, inspect, text
+
+from sqlalchemy import (
+    create_engine,
+    Column,
+    Integer,
+    String,
+    DateTime,
+    Boolean,
+    ForeignKey,
+    inspect,
+    text,
+)
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cloudstorage.db")
+
+# --- DATABASE CONFIGURATION ---
+DB_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "cloudstorage.db",
+)
 SQLALCHEMY_DATABASE_URL = f"sqlite:///{DB_PATH}"
 
-engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+engine = create_engine(
+    SQLALCHEMY_DATABASE_URL,
+    connect_args={"check_same_thread": False},
+)
+
+SessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=engine,
+)
+
 Base = declarative_base()
 
 
-# --- NEW: FOLDER MODEL ---
+# --- FOLDER MODEL ---
 class Folder(Base):
     __tablename__ = "folders"
 
@@ -20,10 +46,14 @@ class Folder(Base):
     owner = Column(String, index=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
-    # Relationship to files inside this folder
-    files = relationship("FileMetadata", back_populates="folder", cascade="all, delete-orphan")
+    files = relationship(
+        "FileMetadata",
+        back_populates="folder",
+        cascade="all, delete-orphan",
+    )
 
 
+# --- FILE MODEL ---
 class FileMetadata(Base):
     __tablename__ = "files"
 
@@ -34,27 +64,35 @@ class FileMetadata(Base):
     upload_time = Column(DateTime, default=datetime.datetime.utcnow)
     owner = Column(String, default="Pending_OAuth")
 
-    # File usage tracking
     access_count = Column(Integer, default=0)
     last_accessed = Column(DateTime, nullable=True)
 
-    # Foreign Key & Relationship for Folder Organization
-    folder_id = Column(Integer, ForeignKey("folders.id", ondelete="SET NULL"), nullable=True)
+    folder_id = Column(
+        Integer,
+        ForeignKey("folders.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     folder = relationship("Folder", back_populates="files")
 
 
+# --- USER MODEL ---
 class User(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String, unique=True, index=True)
     email = Column(String, unique=True, index=True, nullable=True)
-    password_hash = Column(String)
-    salt = Column(String)
+    password_hash = Column(String, nullable=True)
+    salt = Column(String, nullable=True)
+
+    google_id = Column(String, unique=True, index=True, nullable=True)
+    auth_provider = Column(String, default="local")
     two_factor_enabled = Column(Boolean, default=False)
+
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 
+# --- PASSWORD RESET MODEL ---
 class PasswordResetToken(Base):
     __tablename__ = "password_reset_tokens"
 
@@ -67,6 +105,7 @@ class PasswordResetToken(Base):
     used_at = Column(DateTime, nullable=True)
 
 
+# --- OTP MODEL ---
 class OTPRecord(Base):
     __tablename__ = "otp_records"
 
@@ -74,13 +113,14 @@ class OTPRecord(Base):
     username = Column(String, index=True)
     email = Column(String, index=True)
     otp_hash = Column(String, index=True)
-    purpose = Column(String, default="login")  # 'login', 'enable_2fa', 'disable_2fa', 'signup'
+    purpose = Column(String, default="login")
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     expires_at = Column(DateTime, index=True)
     attempts = Column(Integer, default=0)
     used_at = Column(DateTime, nullable=True)
 
 
+# --- USER SESSION MODEL ---
 class UserSession(Base):
     __tablename__ = "user_sessions"
 
@@ -91,6 +131,7 @@ class UserSession(Base):
     expires_at = Column(DateTime, index=True)
 
 
+# --- SHARED FILE MODEL ---
 class SharedFile(Base):
     __tablename__ = "shared_files"
 
@@ -98,7 +139,7 @@ class SharedFile(Base):
     file_id = Column(Integer, ForeignKey("files.id"), index=True)
     owner = Column(String, index=True)
     share_token = Column(String, unique=True, index=True)
-    share_type = Column(String, default="public")  # 'public' or 'private'
+    share_type = Column(String, default="public")
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     expires_at = Column(DateTime, nullable=True)
     password_hash = Column(String, nullable=True)
@@ -108,6 +149,7 @@ class SharedFile(Base):
     access_count = Column(Integer, default=0)
 
 
+# --- FILE SHARE RECIPIENT MODEL ---
 class FileShareRecipient(Base):
     __tablename__ = "file_share_recipients"
 
@@ -117,6 +159,7 @@ class FileShareRecipient(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 
+# --- GOOGLE OAUTH SESSION MODEL ---
 class GoogleOAuthSession(Base):
     __tablename__ = "google_oauth_sessions"
 
@@ -128,6 +171,7 @@ class GoogleOAuthSession(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 
+# --- SIGNUP VERIFICATION MODEL ---
 class SignupVerificationToken(Base):
     __tablename__ = "signup_verification_tokens"
 
@@ -140,29 +184,60 @@ class SignupVerificationToken(Base):
     used_at = Column(DateTime, nullable=True)
 
 
-# Generate database tables
+# --- CREATE TABLES ---
 Base.metadata.create_all(bind=engine)
 
-# Auto-migrate SQLite schema for missing columns
+
+# --- SAFE SQLITE SCHEMA MIGRATIONS ---
 try:
-    with engine.connect() as conn:
-        inspector = inspect(engine)
+    with engine.begin() as conn:
+        inspector = inspect(conn)
 
-        # Check 'users' table columns
-        existing_user_cols = [col['name'] for col in inspector.get_columns('users')]
-        if 'email' not in existing_user_cols:
-            conn.execute(text("ALTER TABLE users ADD COLUMN email VARCHAR"))
-            print("[DATABASE] Auto-migrated: Added 'email' column to users table.")
-        if 'two_factor_enabled' not in existing_user_cols:
-            conn.execute(text("ALTER TABLE users ADD COLUMN two_factor_enabled BOOLEAN DEFAULT 0"))
-            print("[DATABASE] Auto-migrated: Added 'two_factor_enabled' column to users table.")
+        # Existing user table columns
+        existing_user_cols = {
+            col["name"]
+            for col in inspector.get_columns("users")
+        }
 
-        # Check 'files' table columns for folder support
-        existing_file_cols = [col['name'] for col in inspector.get_columns('files')]
-        if 'folder_id' not in existing_file_cols:
-            conn.execute(text("ALTER TABLE files ADD COLUMN folder_id INTEGER REFERENCES folders(id)"))
-            print("[DATABASE] Auto-migrated: Added 'folder_id' column to files table.")
+        user_migrations = {
+            "email": "ALTER TABLE users ADD COLUMN email VARCHAR",
+            "password_hash": "ALTER TABLE users ADD COLUMN password_hash VARCHAR",
+            "salt": "ALTER TABLE users ADD COLUMN salt VARCHAR",
+            "google_id": "ALTER TABLE users ADD COLUMN google_id VARCHAR",
+            "auth_provider": (
+                "ALTER TABLE users ADD COLUMN "
+                "auth_provider VARCHAR DEFAULT 'local'"
+            ),
+            "two_factor_enabled": (
+                "ALTER TABLE users ADD COLUMN "
+                "two_factor_enabled BOOLEAN DEFAULT 0"
+            ),
+        }
 
-        conn.commit()
+        for column_name, sql in user_migrations.items():
+            if column_name not in existing_user_cols:
+                conn.execute(text(sql))
+                print(
+                    f"[DATABASE] Added missing users.{column_name} column."
+                )
+
+        # Existing files table columns
+        existing_file_cols = {
+            col["name"]
+            for col in inspector.get_columns("files")
+        }
+
+        if "folder_id" not in existing_file_cols:
+            conn.execute(
+                text(
+                    "ALTER TABLE files ADD COLUMN "
+                    "folder_id INTEGER REFERENCES folders(id)"
+                )
+            )
+            print("[DATABASE] Added missing files.folder_id column.")
+
+    print("[DATABASE] Schema migration completed.")
+
 except Exception as e:
-    print(f"[DATABASE NOTICE] Schema check completed: {e}")
+    print(f"[DATABASE ERROR] Schema migration failed: {e}")
+    raise
